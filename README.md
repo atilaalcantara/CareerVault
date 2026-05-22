@@ -53,6 +53,15 @@ EMBEDDINGWORKER__INTERVALSECONDS=30
 EMBEDDINGWORKER__BATCHSIZE=5
 EMBEDDINGWORKER__MAXDEGREEOFPARALLELISM=1
 EMBEDDINGWORKER__FAILEDRETRYDELAYMINUTES=5
+RESUMEPROFILE__FULLNAME=
+RESUMEPROFILE__HEADLINE=
+RESUMEPROFILE__EMAIL=
+RESUMEPROFILE__PHONE=
+RESUMEPROFILE__LOCATION=
+RESUMEPROFILE__LINKEDINURL=
+RESUMEPROFILE__GITHUBURL=
+RESUMEPROFILE__PORTFOLIOURL=
+RESUMEPROFILE__BASESUMMARY=
 ```
 
 ## Run Locally
@@ -164,6 +173,38 @@ O endpoint usa o mesmo provider local de embeddings e combina:
 - ranking textual leve com `tsvector` + `pg_trgm`
 
 O contrato da API continua o mesmo; a combinacao hibrida acontece apenas no backend.
+
+## Curriculo sob medida por vaga
+
+Preview do pipeline:
+
+```http
+POST /api/v1/resumes/generate-preview
+```
+
+Gera o PDF final:
+
+```http
+POST /api/v1/resumes/generate
+```
+
+Payload:
+
+```json
+{
+  "jobDescription": "descricao bruta da vaga",
+  "templateId": "default-ats",
+  "targetLanguage": "pt-BR"
+}
+```
+
+Fluxo:
+
+1. Gemini analisa a vaga e gera queries.
+2. A API consulta a base profissional com busca semantica/hibrida.
+3. Evidencias relevantes sao deduplicadas e priorizadas.
+4. Gemini gera um draft estruturado do curriculo.
+5. QuestPDF renderiza o PDF final no backend.
 
 ## Embedding text and rebuild
 

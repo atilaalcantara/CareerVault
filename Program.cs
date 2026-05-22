@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Pgvector.Npgsql;
+using QuestPDF.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +16,7 @@ builder.Services.Configure<NotionOptions>(builder.Configuration.GetSection(Notio
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
 builder.Services.Configure<EmbeddingWorkerOptions>(builder.Configuration.GetSection(EmbeddingWorkerOptions.SectionName));
 builder.Services.Configure<LocalEmbeddingsOptions>(builder.Configuration.GetSection(LocalEmbeddingsOptions.SectionName));
+builder.Services.Configure<ResumeProfileOptions>(builder.Configuration.GetSection(ResumeProfileOptions.SectionName));
 
 var maxRequestBytes = builder.Configuration.GetValue<long?>("Gemini:MaxRequestBytes") ?? 20_000_000;
 builder.WebHost.ConfigureKestrel(options =>
@@ -51,7 +53,11 @@ builder.Services.AddSingleton<IEmbeddingProvider, LocalEmbeddingProvider>();
 builder.Services.AddSingleton<CareerVaultRepository>();
 builder.Services.AddSingleton<NotionCsvBackfillService>();
 builder.Services.AddSingleton<SemanticSearchService>();
+builder.Services.AddSingleton<ResumeProfileProvider>();
+builder.Services.AddSingleton<ResumeEvidenceSelector>();
+builder.Services.AddSingleton<IResumePdfRenderer, QuestPdfResumeRenderer>();
 builder.Services.AddScoped<CareerMemoryIngestionService>();
+builder.Services.AddScoped<ResumeGenerationService>();
 builder.Services.AddScoped<TelegramUpdateHandler>();
 builder.Services.AddHostedService<TelegramBackgroundWorker>();
 builder.Services.AddHostedService<EmbeddingBackgroundWorker>();
@@ -60,6 +66,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+QuestPDF.Settings.License = LicenseType.Community;
 
 if (args.Length >= 2 && string.Equals(args[0], "import-notion-csv", StringComparison.OrdinalIgnoreCase))
 {
@@ -216,6 +223,74 @@ app.MapPost("/api/v1/search/semantic", async (
     .Produces<IReadOnlyList<SemanticSearchResultItem>>(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status400BadRequest)
     .WithName("SearchCareerVaultSemantic");
+
+app.MapPost("/api/v1/resumes/generate-preview", async (
+        ResumeGenerateRequest request,
+        ResumeGenerationService resumeGenerationService,
+        ILogger<Program> logger,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var preview = await resumeGenerationService.GeneratePreviewAsync(request, cancellationToken);
+            return Results.Ok(preview);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Preview de curriculo invalido.");
+            return Results.Problem(title: "Preview de curriculo invalido", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Gemini retornou JSON invalido no fluxo de curriculo.");
+            return Results.Problem(title: "Gemini retornou JSON invalido", detail: ex.Message, statusCode: StatusCodes.Status422UnprocessableEntity);
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogError(ex, "Erro ao chamar Gemini no fluxo de curriculo.");
+            return Results.Problem(title: "Erro de integracao externa", detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+        }
+    })
+    .Accepts<ResumeGenerateRequest>("application/json")
+    .Produces<ResumeGenerationPreviewResponseDto>(StatusCodes.Status200OK)
+    .ProducesProblem(StatusCodes.Status400BadRequest)
+    .ProducesProblem(StatusCodes.Status422UnprocessableEntity)
+    .ProducesProblem(StatusCodes.Status502BadGateway)
+    .WithName("GenerateTailoredResumePreview");
+
+app.MapPost("/api/v1/resumes/generate", async (
+        ResumeGenerateRequest request,
+        ResumeGenerationService resumeGenerationService,
+        ILogger<Program> logger,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var result = await resumeGenerationService.GeneratePdfAsync(request, cancellationToken);
+            return Results.File(result.PdfBytes, "application/pdf", result.FileName);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Geracao de curriculo invalida.");
+            return Results.Problem(title: "Geracao de curriculo invalida", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Gemini retornou JSON invalido no fluxo de curriculo.");
+            return Results.Problem(title: "Gemini retornou JSON invalido", detail: ex.Message, statusCode: StatusCodes.Status422UnprocessableEntity);
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogError(ex, "Erro ao chamar Gemini no fluxo de curriculo.");
+            return Results.Problem(title: "Erro de integracao externa", detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+        }
+    })
+    .Accepts<ResumeGenerateRequest>("application/json")
+    .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
+    .ProducesProblem(StatusCodes.Status400BadRequest)
+    .ProducesProblem(StatusCodes.Status422UnprocessableEntity)
+    .ProducesProblem(StatusCodes.Status502BadGateway)
+    .WithName("GenerateTailoredResumePdf");
 
 app.MapPost("/api/telegram/webhook", async (
         HttpRequest request,

@@ -55,6 +55,70 @@ public sealed class GeminiService(
         throw new HttpRequestException($"Todos os modelos Gemini configurados falharam. Detalhes: {string.Join(" | ", errors)}");
     }
 
+    public Task<JobAnalysisDto> AnalyzeJobDescriptionAsync(
+        string jobDescription,
+        string targetLanguage,
+        CancellationToken cancellationToken)
+    {
+        var prompt = ResumePromptBuilder.BuildJobAnalysisPrompt(jobDescription, targetLanguage);
+        return GenerateJsonAsync<JobAnalysisDto>(
+            prompt,
+            ValidateJobAnalysis,
+            cancellationToken);
+    }
+
+    public Task<TailoredResumeDraftDto> GenerateTailoredResumeDraftAsync(
+        ResumeGenerationContext context,
+        CancellationToken cancellationToken)
+    {
+        var prompt = ResumePromptBuilder.BuildResumeDraftPrompt(context);
+        return GenerateJsonAsync<TailoredResumeDraftDto>(
+            prompt,
+            ValidateResumeDraft,
+            cancellationToken);
+    }
+
+    private async Task<T> GenerateJsonAsync<T>(
+        string prompt,
+        Action<T> validator,
+        CancellationToken cancellationToken)
+    {
+        var config = options.Value;
+        ValidateOptions(config);
+
+        var errors = new List<string>();
+        foreach (var model in config.Models.Where(model => !string.IsNullOrWhiteSpace(model)))
+        {
+            try
+            {
+                logger.LogInformation("Chamando Gemini com modelo {Model} para retorno tipado {ResponseType}", model, typeof(T).Name);
+                var generatedText = await GenerateWithRetriesAsync(
+                    config,
+                    model,
+                    prompt,
+                    [],
+                    cancellationToken);
+
+                var result = JsonSerializer.Deserialize<T>(generatedText, JsonOptions)
+                    ?? throw new JsonException($"Nao foi possivel desserializar {typeof(T).Name}.");
+
+                validator(result);
+                return result;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException or TaskCanceledException)
+            {
+                errors.Add($"{model}: {ex.Message}");
+                logger.LogWarning(ex, "Falha ao usar modelo Gemini {Model} para retorno tipado {ResponseType}", model, typeof(T).Name);
+            }
+        }
+
+        throw new HttpRequestException($"Todos os modelos Gemini configurados falharam. Detalhes: {string.Join(" | ", errors)}");
+    }
+
     private async Task<string> GenerateWithRetriesAsync(
         GeminiOptions config,
         string model,
@@ -66,6 +130,38 @@ public sealed class GeminiService(
         for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
         {
             using var request = BuildHttpRequest(config, model, userContext, fileParts, temporalContext);
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return ExtractText(body);
+            }
+
+            if (!IsTransient(response.StatusCode) || attempt == RetryDelays.Length)
+            {
+                throw new HttpRequestException(
+                    $"Gemini retornou {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                    null,
+                    response.StatusCode);
+            }
+
+            await Task.Delay(RetryDelays[attempt], cancellationToken);
+        }
+
+        throw new HttpRequestException("Falha inesperada ao chamar Gemini.");
+    }
+
+    private async Task<string> GenerateWithRetriesAsync(
+        GeminiOptions config,
+        string model,
+        string prompt,
+        IReadOnlyCollection<GeminiPart> extraParts,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
+        {
+            using var request = BuildHttpRequest(config, model, prompt, extraParts);
             using var response = await httpClient.SendAsync(request, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
@@ -104,6 +200,46 @@ public sealed class GeminiService(
             }
         };
         parts.AddRange(fileParts);
+
+        var payload = new GeminiGenerateContentRequest
+        {
+            Contents =
+            [
+                new GeminiContent
+                {
+                    Parts = parts
+                }
+            ],
+            GenerationConfig = new GeminiGenerationConfig
+            {
+                ResponseMimeType = "application/json",
+                MaxOutputTokens = config.MaxOutputTokens,
+                Temperature = config.Temperature
+            }
+        };
+
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        return new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+    }
+
+    private static HttpRequestMessage BuildHttpRequest(
+        GeminiOptions config,
+        string model,
+        string prompt,
+        IReadOnlyCollection<GeminiPart> extraParts)
+    {
+        var endpoint = $"{config.BaseUrl.TrimEnd('/')}/models/{Uri.EscapeDataString(model)}:generateContent?key={Uri.EscapeDataString(config.ApiKey)}";
+        var parts = new List<GeminiPart>
+        {
+            new()
+            {
+                Text = prompt
+            }
+        };
+        parts.AddRange(extraParts);
 
         var payload = new GeminiGenerateContentRequest
         {
@@ -265,6 +401,35 @@ Regras adicionais de data:
         if (string.IsNullOrWhiteSpace(structuredEntry.Content))
         {
             throw new JsonException("structuredEntry.content e obrigatorio.");
+        }
+    }
+
+    private static void ValidateJobAnalysis(JobAnalysisDto analysis)
+    {
+        if (string.IsNullOrWhiteSpace(analysis.TargetRole))
+        {
+            throw new JsonException("jobAnalysis.targetRole e obrigatorio.");
+        }
+
+        if (analysis.SearchQueries.Length == 0)
+        {
+            throw new JsonException("jobAnalysis.searchQueries precisa conter pelo menos uma query.");
+        }
+    }
+
+    private static void ValidateResumeDraft(TailoredResumeDraftDto draft)
+    {
+        if (string.IsNullOrWhiteSpace(draft.ProfessionalSummary))
+        {
+            throw new JsonException("resumeDraft.professionalSummary e obrigatorio.");
+        }
+
+        if (draft.ExperienceItems.Length == 0
+            && draft.EducationItems.Length == 0
+            && draft.ProjectItems.Length == 0
+            && draft.CertificationItems.Length == 0)
+        {
+            throw new JsonException("resumeDraft precisa conter pelo menos uma secao preenchida.");
         }
     }
 
