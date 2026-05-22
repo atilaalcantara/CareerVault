@@ -54,6 +54,7 @@ Descricao da vaga:
 
 Regras obrigatorias:
 - Use apenas as evidencias fornecidas.
+- Considere que dados de identidade, links e formacao academica fixa ja sao fornecidos pelo perfil estatico da aplicacao.
 - Nao invente experiencias, tecnologias, empresas, resultados ou formacoes.
 - Escreva de forma objetiva, profissional e clara.
 - Priorize aderencia real a vaga.
@@ -63,6 +64,7 @@ Regras obrigatorias:
 - Nao promova tecnologia para skill principal se ela nao aparecer de forma clara e recorrente nas evidencias.
 - Nao inferira ASP.NET MVC, testes unitarios, Kafka, RabbitMQ, React ou Angular como experiencia pratica sem evidencia direta.
 - Diferencie experiencia pratica de estudo, formacao academica e certificacoes.
+- So preencha educationItems se houver educacao adicional relevante alem da formacao fixa do perfil ou se precisar complementar detalhes nao presentes no perfil.
 - Em vaga junior, seja conservador: prefira honestidade e aderencia parcial real a parecer mais senior do que a base permite.
 - Nao gere HTML.
 - Nao escreva texto fora do JSON.

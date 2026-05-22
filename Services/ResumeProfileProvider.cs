@@ -17,6 +17,15 @@ public sealed class ResumeProfileProvider(IOptions<ResumeProfileOptions> options
             LinkedInUrl = options.Value.LinkedInUrl,
             GithubUrl = options.Value.GithubUrl,
             PortfolioUrl = options.Value.PortfolioUrl,
-            BaseSummary = options.Value.BaseSummary
+            BaseSummary = options.Value.BaseSummary,
+            EducationItems = options.Value.EducationItems
+                .Where(item => !string.IsNullOrWhiteSpace(item.Institution) || !string.IsNullOrWhiteSpace(item.Degree))
+                .Select(item => new ResumeEducationItemDto
+                {
+                    Institution = item.Institution,
+                    Degree = item.Degree,
+                    Details = item.Details
+                })
+                .ToArray()
         };
 }

@@ -13,4 +13,12 @@ public sealed class ResumeProfileOptions
     public string GithubUrl { get; init; } = string.Empty;
     public string PortfolioUrl { get; init; } = string.Empty;
     public string BaseSummary { get; init; } = string.Empty;
+    public ResumeProfileEducationOptions[] EducationItems { get; init; } = [];
+}
+
+public sealed class ResumeProfileEducationOptions
+{
+    public string Institution { get; init; } = string.Empty;
+    public string Degree { get; init; } = string.Empty;
+    public string Details { get; init; } = string.Empty;
 }

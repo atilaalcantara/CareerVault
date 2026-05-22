@@ -24,7 +24,7 @@ public sealed class QuestPdfResumeRenderer : IResumePdfRenderer
                     ComposeSummary(column, profile, draft);
                     ComposeSkills(column, draft);
                     ComposeExperience(column, draft);
-                    ComposeEducation(column, draft);
+                    ComposeEducation(column, profile, draft);
                     ComposeSimpleSection(column, "Certificacoes", draft.CertificationItems);
                     ComposeSimpleSection(column, "Projetos", draft.ProjectItems);
                 });
@@ -134,9 +134,10 @@ public sealed class QuestPdfResumeRenderer : IResumePdfRenderer
         });
     }
 
-    private static void ComposeEducation(ColumnDescriptor column, TailoredResumeDraftDto draft)
+    private static void ComposeEducation(ColumnDescriptor column, ResumeProfileDto profile, TailoredResumeDraftDto draft)
     {
-        if (draft.EducationItems.Length == 0)
+        var educationItems = MergeEducation(profile, draft);
+        if (educationItems.Length == 0)
         {
             return;
         }
@@ -146,7 +147,7 @@ public sealed class QuestPdfResumeRenderer : IResumePdfRenderer
             ComposeSectionTitle(section, "Formacao");
             section.Spacing(6);
 
-            foreach (var item in draft.EducationItems)
+            foreach (var item in educationItems)
             {
                 section.Item().Column(education =>
                 {
@@ -159,6 +160,30 @@ public sealed class QuestPdfResumeRenderer : IResumePdfRenderer
                 });
             }
         });
+    }
+
+    private static ResumeEducationItemDto[] MergeEducation(ResumeProfileDto profile, TailoredResumeDraftDto draft)
+    {
+        var merged = new List<ResumeEducationItemDto>();
+        var knownKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in profile.EducationItems.Concat(draft.EducationItems))
+        {
+            if (string.IsNullOrWhiteSpace(item.Institution) && string.IsNullOrWhiteSpace(item.Degree))
+            {
+                continue;
+            }
+
+            var key = $"{item.Degree}|{item.Institution}".Trim();
+            if (!knownKeys.Add(key))
+            {
+                continue;
+            }
+
+            merged.Add(item);
+        }
+
+        return merged.ToArray();
     }
 
     private static void ComposeSimpleSection(ColumnDescriptor column, string title, ResumeSimpleItemDto[] items)

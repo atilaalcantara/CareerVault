@@ -11,4 +11,5 @@ public sealed class ResumeProfileDto
     public string GithubUrl { get; init; } = string.Empty;
     public string PortfolioUrl { get; init; } = string.Empty;
     public string BaseSummary { get; init; } = string.Empty;
+    public ResumeEducationItemDto[] EducationItems { get; init; } = [];
 }
