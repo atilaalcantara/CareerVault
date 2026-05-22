@@ -7,6 +7,7 @@ HOST_PORT="${HOST_PORT:-5000}"
 CONTAINER_PORT="${CONTAINER_PORT:-8080}"
 ENV_FILE="${ENV_FILE:-.env}"
 DOCKER_CMD="${DOCKER_CMD:-sudo docker}"
+LEGACY_APP_NAMES="${LEGACY_APP_NAMES:-memoria-profissional-api}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE"
@@ -16,6 +17,13 @@ fi
 $DOCKER_CMD pull "$IMAGE"
 $DOCKER_CMD stop "$APP_NAME" >/dev/null 2>&1 || true
 $DOCKER_CMD rm "$APP_NAME" >/dev/null 2>&1 || true
+
+for legacy_app_name in $LEGACY_APP_NAMES; do
+  if [[ "$legacy_app_name" != "$APP_NAME" ]]; then
+    $DOCKER_CMD stop "$legacy_app_name" >/dev/null 2>&1 || true
+    $DOCKER_CMD rm "$legacy_app_name" >/dev/null 2>&1 || true
+  fi
+done
 
 $DOCKER_CMD run -d \
   --name "$APP_NAME" \
