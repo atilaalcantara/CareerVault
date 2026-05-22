@@ -406,27 +406,38 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
                 tags,
                 distance,
                 (
-                    ts_rank_cd(search_document, websearch_to_tsquery('simple', @query)) * 0.75
+                    ts_rank_cd(search_document, websearch_to_tsquery('simple', @query)) * 0.45
                     + GREATEST(
                         similarity(coalesce(title, ''), @query),
                         similarity(coalesce(summary, ''), @query),
-                        similarity(coalesce(project, ''), @query),
-                        similarity(coalesce(company, ''), @query),
+                        similarity(coalesce(project, ''), @query)
+                    ) * 0.40
+                    + GREATEST(
                         similarity(array_to_string(coalesce(technologies, ARRAY[]::text[]), ' '), @query),
                         similarity(array_to_string(coalesce(tags, ARRAY[]::text[]), ' '), @query),
-                        similarity(coalesce(content, ''), @query)
-                    ) * 0.25
+                        similarity(coalesce(company, ''), @query)
+                    ) * 0.10
+                    + similarity(coalesce(content, ''), @query) * 0.05
+                    + CASE
+                        WHEN coalesce(title, '') ILIKE '%' || @query || '%' THEN 0.20
+                        WHEN coalesce(summary, '') ILIKE '%' || @query || '%' THEN 0.12
+                        WHEN coalesce(project, '') ILIKE '%' || @query || '%' THEN 0.10
+                        ELSE 0
+                      END
                 ) AS text_score
             FROM source
             WHERE
                 search_document @@ websearch_to_tsquery('simple', @query)
-                OR similarity(coalesce(title, ''), @query) >= 0.12
-                OR similarity(coalesce(summary, ''), @query) >= 0.12
-                OR similarity(coalesce(project, ''), @query) >= 0.12
-                OR similarity(coalesce(company, ''), @query) >= 0.12
-                OR similarity(array_to_string(coalesce(technologies, ARRAY[]::text[]), ' '), @query) >= 0.12
-                OR similarity(array_to_string(coalesce(tags, ARRAY[]::text[]), ' '), @query) >= 0.12
-                OR similarity(coalesce(content, ''), @query) >= 0.10
+                OR coalesce(title, '') ILIKE '%' || @query || '%'
+                OR coalesce(summary, '') ILIKE '%' || @query || '%'
+                OR coalesce(project, '') ILIKE '%' || @query || '%'
+                OR similarity(coalesce(title, ''), @query) >= 0.16
+                OR similarity(coalesce(summary, ''), @query) >= 0.14
+                OR similarity(coalesce(project, ''), @query) >= 0.14
+                OR similarity(coalesce(company, ''), @query) >= 0.16
+                OR similarity(array_to_string(coalesce(technologies, ARRAY[]::text[]), ' '), @query) >= 0.16
+                OR similarity(array_to_string(coalesce(tags, ARRAY[]::text[]), ' '), @query) >= 0.16
+                OR similarity(coalesce(content, ''), @query) >= 0.14
             ORDER BY text_score DESC, distance ASC
             LIMIT @limit;
             """;

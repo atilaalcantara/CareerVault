@@ -33,14 +33,21 @@ public sealed class SemanticSearchService(
         var vectorCandidates = await repository.SearchVectorCandidatesAsync(embedding, candidateLimit, cancellationToken);
         var textCandidates = await repository.SearchTextCandidatesAsync(query, embedding, candidateLimit, cancellationToken);
 
-        return MergeCandidates(vectorCandidates, textCandidates, normalizedLimit);
+        return MergeCandidates(query, vectorCandidates, textCandidates, normalizedLimit);
     }
 
     private static IReadOnlyList<SemanticSearchResultItem> MergeCandidates(
+        string query,
         IReadOnlyList<SemanticSearchCandidate> vectorCandidates,
         IReadOnlyList<SemanticSearchCandidate> textCandidates,
         int limit)
     {
+        var queryTerms = query
+            .Split([' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var isShortSpecificQuery = queryTerms.Length is > 0 and <= 3;
+        var semanticWeight = isShortSpecificQuery ? 0.55d : 0.70d;
+        var textWeight = 1d - semanticWeight;
+
         var maxDistance = vectorCandidates.Count == 0
             ? 1d
             : Math.Max(vectorCandidates.Max(candidate => candidate.Result.Distance), 0.000001d);
@@ -77,7 +84,7 @@ public sealed class SemanticSearchService(
 
         return merged
             .Values
-            .OrderByDescending(candidate => candidate.FinalScore)
+            .OrderByDescending(candidate => candidate.GetFinalScore(semanticWeight, textWeight))
             .ThenBy(candidate => candidate.Result.Distance)
             .Take(limit)
             .Select(candidate => candidate.Result)
@@ -89,6 +96,7 @@ public sealed class SemanticSearchService(
         double SemanticScore,
         double TextScore)
     {
-        public double FinalScore => (SemanticScore * 0.7d) + (TextScore * 0.3d);
+        public double GetFinalScore(double semanticWeight, double textWeight) =>
+            (SemanticScore * semanticWeight) + (TextScore * textWeight);
     }
 }
