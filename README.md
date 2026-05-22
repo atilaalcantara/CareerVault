@@ -158,7 +158,12 @@ Payload:
 }
 ```
 
-O endpoint usa o mesmo provider local de embeddings e busca no `pgvector` com cosine distance.
+O endpoint usa o mesmo provider local de embeddings e combina:
+
+- busca vetorial no `pgvector`
+- ranking textual leve com `tsvector` + `pg_trgm`
+
+O contrato da API continua o mesmo; a combinacao hibrida acontece apenas no backend.
 
 ## Embedding text and rebuild
 

@@ -317,6 +317,15 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         int limit,
         CancellationToken cancellationToken)
     {
+        var candidates = await SearchVectorCandidatesAsync(queryEmbedding, limit, cancellationToken);
+        return candidates.Select(candidate => candidate.Result).ToArray();
+    }
+
+    public async Task<IReadOnlyList<SemanticSearchCandidate>> SearchVectorCandidatesAsync(
+        float[] queryEmbedding,
+        int limit,
+        CancellationToken cancellationToken)
+    {
         const string sql = """
             SELECT
                 entries.id,
@@ -340,26 +349,120 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         command.Parameters.AddWithValue("query_embedding", new Vector(queryEmbedding));
         command.Parameters.AddWithValue("limit", limit);
 
-        var results = new List<SemanticSearchResultItem>();
+        var results = new List<SemanticSearchCandidate>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            results.Add(new SemanticSearchResultItem
+            results.Add(new SemanticSearchCandidate
             {
-                Id = reader.GetGuid(0),
-                Title = reader.GetString(1),
-                Summary = reader.IsDBNull(2) ? null : reader.GetString(2),
-                Content = reader.GetString(3),
-                Company = reader.IsDBNull(4) ? null : reader.GetString(4),
-                Project = reader.IsDBNull(5) ? null : reader.GetString(5),
-                Technologies = reader.IsDBNull(6) ? [] : reader.GetFieldValue<string[]>(6),
-                Tags = reader.IsDBNull(7) ? [] : reader.GetFieldValue<string[]>(7),
-                Distance = reader.GetDouble(8)
+                Result = ReadSemanticSearchResult(reader),
+                TextScore = null
             });
         }
 
         return results;
     }
+
+    public async Task<IReadOnlyList<SemanticSearchCandidate>> SearchTextCandidatesAsync(
+        string query,
+        float[] queryEmbedding,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH source AS (
+                SELECT
+                    entries.id,
+                    entries.title,
+                    entries.summary,
+                    entries.content,
+                    entries.company,
+                    entries.project,
+                    entries.technologies,
+                    entries.tags,
+                    embeddings.embedding <=> @query_embedding AS distance,
+                    (
+                        setweight(to_tsvector('simple', coalesce(entries.title, '')), 'A') ||
+                        setweight(to_tsvector('simple', coalesce(entries.summary, '')), 'A') ||
+                        setweight(to_tsvector('simple', coalesce(entries.project, '')), 'B') ||
+                        setweight(to_tsvector('simple', coalesce(entries.company, '')), 'B') ||
+                        setweight(to_tsvector('simple', array_to_string(coalesce(entries.technologies, ARRAY[]::text[]), ' ')), 'A') ||
+                        setweight(to_tsvector('simple', array_to_string(coalesce(entries.tags, ARRAY[]::text[]), ' ')), 'B') ||
+                        setweight(to_tsvector('simple', coalesce(entries.content, '')), 'C')
+                    ) AS search_document
+                FROM career_vault.professional_entries AS entries
+                INNER JOIN career_vault.professional_entry_embeddings AS embeddings
+                    ON embeddings.entry_id = entries.id
+                WHERE entries.embedding_status = 'completed'
+            )
+            SELECT
+                id,
+                title,
+                summary,
+                content,
+                company,
+                project,
+                technologies,
+                tags,
+                distance,
+                (
+                    ts_rank_cd(search_document, websearch_to_tsquery('simple', @query)) * 0.75
+                    + GREATEST(
+                        similarity(coalesce(title, ''), @query),
+                        similarity(coalesce(summary, ''), @query),
+                        similarity(coalesce(project, ''), @query),
+                        similarity(coalesce(company, ''), @query),
+                        similarity(array_to_string(coalesce(technologies, ARRAY[]::text[]), ' '), @query),
+                        similarity(array_to_string(coalesce(tags, ARRAY[]::text[]), ' '), @query),
+                        similarity(coalesce(content, ''), @query)
+                    ) * 0.25
+                ) AS text_score
+            FROM source
+            WHERE
+                search_document @@ websearch_to_tsquery('simple', @query)
+                OR similarity(coalesce(title, ''), @query) >= 0.12
+                OR similarity(coalesce(summary, ''), @query) >= 0.12
+                OR similarity(coalesce(project, ''), @query) >= 0.12
+                OR similarity(coalesce(company, ''), @query) >= 0.12
+                OR similarity(array_to_string(coalesce(technologies, ARRAY[]::text[]), ' '), @query) >= 0.12
+                OR similarity(array_to_string(coalesce(tags, ARRAY[]::text[]), ' '), @query) >= 0.12
+                OR similarity(coalesce(content, ''), @query) >= 0.10
+            ORDER BY text_score DESC, distance ASC
+            LIMIT @limit;
+            """;
+
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("query", query);
+        command.Parameters.AddWithValue("query_embedding", new Vector(queryEmbedding));
+        command.Parameters.AddWithValue("limit", limit);
+
+        var results = new List<SemanticSearchCandidate>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new SemanticSearchCandidate
+            {
+                Result = ReadSemanticSearchResult(reader),
+                TextScore = reader.IsDBNull(9) ? null : reader.GetDouble(9)
+            });
+        }
+
+        return results;
+    }
+
+    private static SemanticSearchResultItem ReadSemanticSearchResult(NpgsqlDataReader reader) =>
+        new()
+        {
+            Id = reader.GetGuid(0),
+            Title = reader.GetString(1),
+            Summary = reader.IsDBNull(2) ? null : reader.GetString(2),
+            Content = reader.GetString(3),
+            Company = reader.IsDBNull(4) ? null : reader.GetString(4),
+            Project = reader.IsDBNull(5) ? null : reader.GetString(5),
+            Technologies = reader.IsDBNull(6) ? [] : reader.GetFieldValue<string[]>(6),
+            Tags = reader.IsDBNull(7) ? [] : reader.GetFieldValue<string[]>(7),
+            Distance = reader.GetDouble(8)
+        };
 
     private static void AddCommonEntryParameters(
         NpgsqlCommand command,
