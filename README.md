@@ -15,6 +15,7 @@ The ingestion prompt is kept in Portuguese because the generated records are int
 - Telegram bot webhook with session-based collection and confirmation
 - In-memory Telegram processing queue
 - Background worker for embedding generation and reprocessing
+- Deterministic natural-language embedding text with versioned content hashing
 - Docker-ready deployment
 - GitHub Actions workflow for GHCR-based deployment
 
@@ -158,6 +159,31 @@ Payload:
 ```
 
 O endpoint usa o mesmo provider local de embeddings e busca no `pgvector` com cosine distance.
+
+## Embedding text and rebuild
+
+The embedding text is built by the application from the structured fields already stored in PostgreSQL. The app does not ask Gemini for a second "embedding-only" narrative. Instead, it creates a deterministic natural-language description from fields such as `title`, `content`, `summary`, `company`, `project`, `role`, `technologies`, and `tags`.
+
+This keeps the pipeline stable, cheap, and easy to reprocess.
+
+When the embedding text format changes, mark existing completed entries as `stale` and let the worker rebuild them in small batches:
+
+```bash
+dotnet run -- mark-embeddings-stale
+```
+
+Optional model override:
+
+```bash
+dotnet run -- mark-embeddings-stale sentence-transformers/all-MiniLM-L6-v2
+```
+
+After this command:
+
+1. existing `completed` entries are moved to `stale`
+2. the background worker picks them up on the next cycle
+3. embeddings are regenerated with the current text format
+4. `professional_entry_embeddings` is updated in place through `ON CONFLICT`
 
 ## Deployment
 

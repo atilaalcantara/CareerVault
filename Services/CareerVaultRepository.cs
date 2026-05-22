@@ -30,7 +30,10 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
                 embedding_status,
                 embedding_model,
                 embedding_dimensions,
-                notion_sync_status
+                notion_sync_status,
+                notion_page_id,
+                notion_last_error,
+                notion_synced_at
             )
             VALUES
             (
@@ -50,7 +53,10 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
                 'pending',
                 @embedding_model,
                 @embedding_dimensions,
-                'pending'
+                @notion_sync_status,
+                @notion_page_id,
+                @notion_last_error,
+                @notion_synced_at
             )
             RETURNING
                 id,
@@ -83,6 +89,10 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         await using var command = dataSource.CreateCommand(sql);
         AddCommonEntryParameters(command, request);
         command.Parameters.AddWithValue("raw_payload", request.RawPayload.GetRawText());
+        command.Parameters.AddWithValue("notion_sync_status", request.NotionSyncStatus);
+        command.Parameters.AddWithValue("notion_page_id", (object?)request.NotionPageId ?? DBNull.Value);
+        command.Parameters.AddWithValue("notion_last_error", (object?)request.NotionLastError ?? DBNull.Value);
+        command.Parameters.AddWithValue("notion_synced_at", request.NotionSyncedAt?.UtcDateTime ?? (object)DBNull.Value);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -91,6 +101,51 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         }
 
         return ReadEntry(reader);
+    }
+
+    public async Task<bool> ExistsByContentHashAsync(string contentHash, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM career_vault.professional_entries
+                WHERE content_hash = @content_hash
+            );
+            """;
+
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("content_hash", contentHash);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is true || result is bool boolResult && boolResult;
+    }
+
+    public async Task<int> MarkEmbeddingsStaleAsync(
+        string? model,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH updated AS (
+                UPDATE career_vault.professional_entries
+                SET
+                    embedding_status = 'stale',
+                    embedding_error = NULL
+                WHERE embedding_status = 'completed'
+                  AND (
+                        @model IS NULL
+                        OR embedding_model = @model
+                      )
+                RETURNING 1
+            )
+            SELECT COUNT(*)
+            FROM updated;
+            """;
+
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("model", (object?)model ?? DBNull.Value);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is int count
+            ? count
+            : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     public async Task UpdateNotionSyncAsync(

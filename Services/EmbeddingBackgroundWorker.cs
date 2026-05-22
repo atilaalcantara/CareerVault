@@ -21,10 +21,11 @@ public sealed class EmbeddingBackgroundWorker(
         }
 
         logger.LogInformation(
-            "Embedding worker iniciado. Intervalo: {IntervalSeconds}s; batch: {BatchSize}; paralelismo: {Parallelism}",
+            "Embedding worker iniciado. Intervalo: {IntervalSeconds}s; batch: {BatchSize}; paralelismo: {Parallelism}; formato de texto: {EmbeddingFormatVersion}",
             _workerOptions.IntervalSeconds,
             _workerOptions.BatchSize,
-            _workerOptions.MaxDegreeOfParallelism);
+            _workerOptions.MaxDegreeOfParallelism,
+            EmbeddingTextBuilder.CurrentFormatVersion);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -71,8 +72,11 @@ public sealed class EmbeddingBackgroundWorker(
             if (!string.Equals(recalculatedHash, job.ContentHash, StringComparison.Ordinal))
             {
                 logger.LogInformation(
-                    "Content hash divergente para entry {EntryId}. Reprocessando embedding com hash recalculado.",
-                    job.Id);
+                    "Content hash divergente para entry {EntryId}. Reprocessando embedding com formato {EmbeddingFormatVersion}. Hash antigo: {PreviousHash}; hash novo: {RecalculatedHash}",
+                    job.Id,
+                    EmbeddingTextBuilder.CurrentFormatVersion,
+                    job.ContentHash,
+                    recalculatedHash);
             }
 
             try

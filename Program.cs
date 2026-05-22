@@ -49,6 +49,7 @@ builder.Services.AddSingleton<TelegramUpdateQueue>();
 builder.Services.AddSingleton<TelegramMemorySessionStore>();
 builder.Services.AddSingleton<IEmbeddingProvider, LocalEmbeddingProvider>();
 builder.Services.AddSingleton<CareerVaultRepository>();
+builder.Services.AddSingleton<NotionCsvBackfillService>();
 builder.Services.AddSingleton<SemanticSearchService>();
 builder.Services.AddScoped<CareerMemoryIngestionService>();
 builder.Services.AddScoped<TelegramUpdateHandler>();
@@ -59,6 +60,49 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+if (args.Length >= 2 && string.Equals(args[0], "import-notion-csv", StringComparison.OrdinalIgnoreCase))
+{
+    using var scope = app.Services.CreateScope();
+    var importer = scope.ServiceProvider.GetRequiredService<NotionCsvBackfillService>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    var importResult = await importer.ImportAsync(args[1], CancellationToken.None);
+
+    logger.LogInformation(
+        "Importacao do Notion finalizada. Processadas: {Processed}; importadas: {Imported}; duplicadas ignoradas: {SkippedDuplicates}",
+        importResult.Processed,
+        importResult.Imported,
+        importResult.SkippedDuplicates);
+
+    if (importResult.Warnings.Count > 0)
+    {
+        foreach (var warning in importResult.Warnings)
+        {
+            logger.LogWarning("{Warning}", warning);
+        }
+    }
+
+    return;
+}
+
+if (args.Length >= 1 && string.Equals(args[0], "mark-embeddings-stale", StringComparison.OrdinalIgnoreCase))
+{
+    using var scope = app.Services.CreateScope();
+    var repository = scope.ServiceProvider.GetRequiredService<CareerVaultRepository>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    var embeddingsOptions = scope.ServiceProvider.GetRequiredService<IOptions<LocalEmbeddingsOptions>>();
+    var model = args.Length >= 2 ? args[1] : embeddingsOptions.Value.Model;
+
+    var updatedEntries = await repository.MarkEmbeddingsStaleAsync(model, CancellationToken.None);
+
+    logger.LogInformation(
+        "Entries marcadas como stale para reprocessamento de embeddings. Modelo: {Model}; total: {UpdatedEntries}; formato alvo: {EmbeddingFormatVersion}",
+        model,
+        updatedEntries,
+        EmbeddingTextBuilder.CurrentFormatVersion);
+
+    return;
+}
 
 app.UseSwagger();
 app.UseSwaggerUI();
