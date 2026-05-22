@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Deploy ZimaOS",
+      "type": "shell",
+      "command": "bash deploy/zima-deploy.sh",
+      "problemMatcher": []
+    }
+  ]
+}
