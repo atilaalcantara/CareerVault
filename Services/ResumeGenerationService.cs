@@ -5,14 +5,14 @@ using Microsoft.Extensions.Logging;
 namespace CareerVault.Api.Services;
 
 public sealed partial class ResumeGenerationService(
-    GeminiService geminiService,
+    IAiContentService aiContentService,
     SemanticSearchService semanticSearchService,
     ResumeEvidenceSelector evidenceSelector,
     ResumeProfileProvider profileProvider,
     IResumePdfRenderer pdfRenderer,
     ILogger<ResumeGenerationService> logger)
 {
-    private const int ResultsPerQuery = 6;
+    private const int ResultsPerQuery = 4;
 
     public async Task<ResumeGenerationPreviewResponseDto> GeneratePreviewAsync(
         ResumeGenerateRequest request,
@@ -23,7 +23,7 @@ public sealed partial class ResumeGenerationService(
         logger.LogInformation("Gerando preview de curriculo para template {TemplateId}.", request.TemplateId);
 
         var profile = profileProvider.GetProfile();
-        var jobAnalysis = await geminiService.AnalyzeJobDescriptionAsync(
+        var jobAnalysis = await aiContentService.AnalyzeJobDescriptionAsync(
             request.JobDescription,
             request.TargetLanguage,
             cancellationToken);
@@ -67,7 +67,7 @@ public sealed partial class ResumeGenerationService(
             Evidence = evidence
         };
 
-        var draft = await geminiService.GenerateTailoredResumeDraftAsync(context, cancellationToken);
+        var draft = await aiContentService.GenerateTailoredResumeDraftAsync(context, cancellationToken);
 
         logger.LogInformation(
             "Draft de curriculo gerado. Skills: {SkillCount}; experiencias: {ExperienceCount}; formacoes: {EducationCount}",

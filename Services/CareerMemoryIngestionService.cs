@@ -6,7 +6,7 @@ namespace CareerVault.Api.Services;
 
 public sealed class CareerMemoryIngestionService(
     FilePayloadBuilder filePayloadBuilder,
-    GeminiService geminiService,
+    IAiContentService aiContentService,
     CareerVaultRepository repository,
     NotionService notionService,
     IOptions<LocalEmbeddingsOptions> localEmbeddingsOptions,
@@ -51,7 +51,7 @@ public sealed class CareerMemoryIngestionService(
     {
         ValidateInput(context, fileParts.Count, EstimateBase64PayloadBytes(fileParts));
 
-        var geminiResult = await geminiService.GenerateStructuredPayloadAsync(context, fileParts, temporalContext, cancellationToken);
+        var geminiResult = await aiContentService.GenerateStructuredPayloadAsync(context, fileParts, temporalContext, cancellationToken);
         var embeddingText = EmbeddingTextBuilder.Build(geminiResult.StructuredEntry);
         var contentHash = EmbeddingTextBuilder.ComputeSha256(embeddingText);
         var rawPayload = StructuredPayloadRawBuilder.Build(source, context, geminiResult, fileParts.Count);

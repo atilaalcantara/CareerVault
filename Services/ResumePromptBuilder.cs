@@ -59,6 +59,11 @@ Regras obrigatorias:
 - Priorize aderencia real a vaga.
 - Prefira bullets curtos e fortes.
 - Se uma informacao nao estiver nas evidencias, omita.
+- Nao transforme conhecimento conceitual, estudo superficial ou contato indireto em experiencia pratica.
+- Nao promova tecnologia para skill principal se ela nao aparecer de forma clara e recorrente nas evidencias.
+- Nao inferira ASP.NET MVC, testes unitarios, Kafka, RabbitMQ, React ou Angular como experiencia pratica sem evidencia direta.
+- Diferencie experiencia pratica de estudo, formacao academica e certificacoes.
+- Em vaga junior, seja conservador: prefira honestidade e aderencia parcial real a parecer mais senior do que a base permite.
 - Nao gere HTML.
 - Nao escreva texto fora do JSON.
 

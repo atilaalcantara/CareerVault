@@ -11,7 +11,7 @@ public sealed class GeminiService(
     HttpClient httpClient,
     IOptions<GeminiOptions> options,
     IOptions<NotionOptions> notionOptions,
-    ILogger<GeminiService> logger)
+    ILogger<GeminiService> logger) : IAiContentService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan[] RetryDelays =
@@ -31,7 +31,7 @@ public sealed class GeminiService(
         ValidateOptions(config);
 
         var errors = new List<string>();
-        foreach (var model in config.Models.Where(model => !string.IsNullOrWhiteSpace(model)))
+        foreach (var model in GetModelsForRequest(config, fileParts.Count > 0))
         {
             try
             {
@@ -87,7 +87,7 @@ public sealed class GeminiService(
         ValidateOptions(config);
 
         var errors = new List<string>();
-        foreach (var model in config.Models.Where(model => !string.IsNullOrWhiteSpace(model)))
+        foreach (var model in GetModelsForTextOnlyRequest(config))
         {
             try
             {
@@ -439,6 +439,25 @@ Regras adicionais de data:
             or HttpStatusCode.BadGateway
             or HttpStatusCode.ServiceUnavailable
             or HttpStatusCode.GatewayTimeout;
+
+    private static IReadOnlyList<string> GetModelsForRequest(GeminiOptions config, bool hasFiles)
+    {
+        if (hasFiles)
+        {
+            return config.Models
+                .Where(model => !string.IsNullOrWhiteSpace(model))
+                .ToArray();
+        }
+
+        return GetModelsForTextOnlyRequest(config);
+    }
+
+    private static IReadOnlyList<string> GetModelsForTextOnlyRequest(GeminiOptions config) =>
+        config.TextOnlyModels
+            .Concat(config.Models)
+            .Where(model => !string.IsNullOrWhiteSpace(model))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static void ValidateOptions(GeminiOptions config)
     {

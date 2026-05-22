@@ -5,6 +5,8 @@ namespace CareerVault.Api.Services;
 public sealed class ResumeEvidenceSelector
 {
     private const int MaxSelectedEvidence = 18;
+    private const double MaxEvidenceDistance = 0.90d;
+    private const double MinEvidenceScore = 0.35d;
 
     public ResumeEvidenceDto[] Select(
         JobAnalysisDto jobAnalysis,
@@ -16,6 +18,7 @@ public sealed class ResumeEvidenceSelector
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value.Trim())
             .ToArray();
+        var practicalBias = ShouldFavorPracticalExperience(jobAnalysis);
 
         var merged = new Dictionary<Guid, AggregatedEvidence>(capacity: 64);
 
@@ -23,6 +26,11 @@ public sealed class ResumeEvidenceSelector
         {
             foreach (var result in results)
             {
+                if (result.Distance > MaxEvidenceDistance)
+                {
+                    continue;
+                }
+
                 if (!merged.TryGetValue(result.Id, out var existing))
                 {
                     merged[result.Id] = new AggregatedEvidence(result);
@@ -30,12 +38,13 @@ public sealed class ResumeEvidenceSelector
                 }
 
                 existing.Queries.Add(query);
-                existing.Score += ComputeEvidenceScore(result, mustHave, query);
+                existing.Score += ComputeEvidenceScore(result, mustHave, query, practicalBias);
             }
         }
 
         return merged
             .Values
+            .Where(item => item.Score >= MinEvidenceScore)
             .OrderByDescending(item => item.Score)
             .ThenBy(item => item.Result.Distance)
             .Take(MaxSelectedEvidence)
@@ -59,14 +68,32 @@ public sealed class ResumeEvidenceSelector
     private static double ComputeEvidenceScore(
         SemanticSearchResultItem result,
         IReadOnlyCollection<string> mustHave,
-        string query)
+        string query,
+        bool practicalBias)
     {
         var score = 1d - Math.Min(result.Distance, 1d);
         score += CountMatches(result, mustHave) * 0.12d;
         score += CountMatches(result, [query]) * 0.08d;
-        score += result.Tags.Any(tag => tag.Contains("study", StringComparison.OrdinalIgnoreCase) || tag.Contains("estudo", StringComparison.OrdinalIgnoreCase))
-            ? 0d
-            : 0.08d;
+
+        if (LooksPractical(result))
+        {
+            score += 0.10d;
+        }
+
+        if (practicalBias && IsStudyLike(result))
+        {
+            score -= 0.12d;
+        }
+
+        if (IsGenericCareerEntry(result))
+        {
+            score -= 0.18d;
+        }
+
+        if (HasConcreteStackMatch(result, mustHave))
+        {
+            score += 0.12d;
+        }
 
         return score;
     }
@@ -111,6 +138,91 @@ public sealed class ResumeEvidenceSelector
         }
 
         return $"Aderencia observada em: {string.Join(", ", matchedKeywords)}.";
+    }
+
+    private static bool ShouldFavorPracticalExperience(JobAnalysisDto jobAnalysis)
+    {
+        var responsibilities = string.Join(' ', jobAnalysis.Responsibilities);
+        return responsibilities.Contains("Entregar", StringComparison.OrdinalIgnoreCase)
+            || responsibilities.Contains("Participar de code reviews", StringComparison.OrdinalIgnoreCase)
+            || responsibilities.Contains("Escrever código", StringComparison.OrdinalIgnoreCase)
+            || jobAnalysis.MustHaveSkills.Length >= 4;
+    }
+
+    private static bool LooksPractical(SemanticSearchResultItem result)
+    {
+        var signals = string.Join(
+            ' ',
+            [
+                result.Title,
+                result.Summary ?? string.Empty,
+                result.Project ?? string.Empty,
+                string.Join(' ', result.Tags)
+            ]);
+
+        return signals.Contains("backend", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("bugfix", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("infra", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("api", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("projeto", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("integra", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsStudyLike(SemanticSearchResultItem result)
+    {
+        var signals = string.Join(
+            ' ',
+            [
+                result.Title,
+                result.Summary ?? string.Empty,
+                result.Project ?? string.Empty,
+                string.Join(' ', result.Tags)
+            ]);
+
+        return signals.Contains("estudo", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("study", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("certifica", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("formação acadêmica", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("bacharelado", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGenericCareerEntry(SemanticSearchResultItem result)
+    {
+        var signals = string.Join(
+            ' ',
+            [
+                result.Title,
+                result.Summary ?? string.Empty,
+                result.Project ?? string.Empty
+            ]);
+
+        return signals.Contains("memória profissional", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("inicialização do sistema", StringComparison.OrdinalIgnoreCase)
+            || signals.Contains("exploração de memória profissional", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasConcreteStackMatch(SemanticSearchResultItem result, IReadOnlyCollection<string> mustHave)
+    {
+        var concreteTerms = mustHave
+            .Where(term =>
+                term.Contains(".NET", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("C#", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("SQL", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("Docker", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("Git", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("React", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("Angular", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("Kafka", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("RabbitMQ", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (concreteTerms.Length == 0)
+        {
+            return false;
+        }
+
+        return CountMatches(result, concreteTerms) > 0;
     }
 
     private sealed class AggregatedEvidence(SemanticSearchResultItem result)

@@ -30,6 +30,7 @@ builder.Services.Configure<FormOptions>(options =>
 });
 
 builder.Services.AddHttpClient<GeminiService>();
+builder.Services.AddHttpClient<IAiContentService, GeminiService>();
 builder.Services.AddHttpClient<NotionService>();
 builder.Services.AddHttpClient<TelegramService>();
 builder.Services.AddSingleton(static sp =>
