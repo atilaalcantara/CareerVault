@@ -1,6 +1,6 @@
 # CareerVault
 
-CareerVault is a lightweight .NET 10 Minimal API for capturing professional career memory from text and multimodal files. It sends the input to Gemini, receives a structured Notion page payload, and stores it in a Notion database.
+CareerVault is a lightweight .NET 10 Minimal API for capturing professional career memory from text and multimodal files. It sends the input to Gemini, receives a stable structured payload, stores it in PostgreSQL first, then syncs to Notion, and generates local embeddings asynchronously with a background worker.
 
 The ingestion prompt is kept in Portuguese because the generated records are intended for a Portuguese personal Notion database.
 
@@ -8,9 +8,13 @@ The ingestion prompt is kept in Portuguese because the generated records are int
 
 - Multipart ingestion for text, audio, images, and PDFs
 - Gemini REST integration with model fallback and retries
+- PostgreSQL persistence with `career_vault` schema
+- pgvector storage for semantic search
+- Local embeddings with `ElBruno.LocalEmbeddings`
 - Notion REST integration for page creation
 - Telegram bot webhook with session-based collection and confirmation
 - In-memory Telegram processing queue
+- Background worker for embedding generation and reprocessing
 - Docker-ready deployment
 - GitHub Actions workflow for GHCR-based deployment
 
@@ -20,9 +24,12 @@ The ingestion prompt is kept in Portuguese because the generated records are int
 - ASP.NET Core Minimal APIs
 - C#
 - Docker
+- PostgreSQL
+- pgvector
 - Gemini API
 - Notion API
 - Telegram Bot API
+- ElBruno.LocalEmbeddings
 - GitHub Container Registry
 
 ## Configuration
@@ -32,10 +39,19 @@ Use environment variables or an `.env` file. Do not commit real secrets.
 ```env
 GEMINI__APIKEY=
 NOTION__TOKEN=Bearer 
+CONNECTIONSTRINGS__POSTGRES=Host=personal-postgres;Port=5432;Database=personal_db;Username=postgres;Password=CHANGE_ME;Search Path=career_vault,public
 TELEGRAM__BOTTOKEN=
 TELEGRAM__WEBHOOKSECRET=
 TELEGRAM__ALLOWEDUSERIDS__0=
 TELEGRAM__QUEUECAPACITY=100
+LOCALEMBEDDINGS__MODEL=sentence-transformers/all-MiniLM-L6-v2
+LOCALEMBEDDINGS__DIMENSIONS=384
+LOCALEMBEDDINGS__CACHEDIRECTORY=/app/.cache/local-embeddings
+EMBEDDINGWORKER__ENABLED=true
+EMBEDDINGWORKER__INTERVALSECONDS=30
+EMBEDDINGWORKER__BATCHSIZE=5
+EMBEDDINGWORKER__MAXDEGREEOFPARALLELISM=1
+EMBEDDINGWORKER__FAILEDRETRYDELAYMINUTES=5
 ```
 
 ## Run Locally
@@ -82,7 +98,7 @@ Bot flow:
 ```text
 /iniciar   start a collection
 /enviar    review before submission
-/confirmar send to Gemini and Notion
+/confirmar send to Gemini, PostgreSQL, and Notion
 /cancelar  discard the current collection
 ```
 
@@ -94,6 +110,54 @@ Supported inputs include text, Telegram voice messages, audio files, images, and
 docker build -t career-vault-api .
 docker run --rm -p 5000:8080 --env-file .env career-vault-api
 ```
+
+Para persistir o cache do modelo local:
+
+```bash
+mkdir -p models-cache
+docker compose up -d
+```
+
+O `docker-compose.yml` da aplicação já monta `./models-cache:/app/.cache/local-embeddings` e conecta na Docker network externa `personal-net`.
+
+## PostgreSQL + pgvector na VPS
+
+Use uma única instância PostgreSQL para vários projetos pessoais e separe por schemas.
+
+Exemplos:
+
+- `career_vault`
+- `gamer_api`
+- `future_project`
+
+Na VPS, a infra do banco foi separada da aplicação e ficou em `~/apps/postgres`, ao lado dos outros serviços.
+
+Resumo do fluxo:
+
+1. Request entra pela API ou Telegram.
+2. Gemini retorna `structuredEntry` + `notionPayload`.
+3. A API salva primeiro no PostgreSQL.
+4. A API tenta sincronizar com o Notion.
+5. O worker em background gera ou reprocessa embeddings depois.
+
+## Busca semântica
+
+Endpoint inicial:
+
+```http
+POST /api/v1/search/semantic
+```
+
+Payload:
+
+```json
+{
+  "query": "experiencia com kubernetes, troubleshooting e logs em producao",
+  "limit": 10
+}
+```
+
+O endpoint usa o mesmo provider local de embeddings e busca no `pgvector` com cosine distance.
 
 ## Deployment
 
@@ -120,6 +184,24 @@ Runtime secrets remain on the VPS in:
 ~/apps/career-vault-api/.env
 ```
 
+Deploy remoto validado na VPS:
+
+- o app nasce primeiro na `personal-net` para conseguir resolver `personal-postgres` desde o boot
+- em seguida ele tambem e conectado na `career-vault-net`
+- o cache local do modelo e persistido em `~/apps/career-vault-api/models-cache`
+- o banco fica separado em `~/apps/postgres`
+
+## ARM64 notes
+
+Checklist para VPS Linux ARM64:
+
+- `uname -m`
+- `docker version`
+- `docker compose version`
+- `docker run --rm --platform linux/arm64 mcr.microsoft.com/dotnet/runtime:8.0 uname -m`
+
+O projeto evita fixar `amd64`, usa imagens oficiais multi-arch da Microsoft e mantém o cache do modelo fora do container para sobreviver a restart.
+
 ## Notes
 
-CareerVault is intentionally small and practical: no database, no SDKs for external APIs, and no heavy architecture layers. It uses REST integrations and keeps the deployment model simple.
+CareerVault continua intencionalmente pequeno e prático: REST direto para integrações externas, uma única instância PostgreSQL compartilhada por schemas, e embeddings locais assíncronos sem gerar carga no request principal.

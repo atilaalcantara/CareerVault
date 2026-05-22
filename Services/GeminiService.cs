@@ -21,7 +21,7 @@ public sealed class GeminiService(
         TimeSpan.FromSeconds(10)
     ];
 
-    public async Task<GeminiNotionPayloadResult> GenerateNotionPayloadAsync(
+    public async Task<GeminiStructuredPayloadResult> GenerateStructuredPayloadAsync(
         string? userContext,
         IReadOnlyCollection<GeminiPart> fileParts,
         IngestionTemporalContext temporalContext,
@@ -37,9 +37,9 @@ public sealed class GeminiService(
             {
                 logger.LogInformation("Chamando Gemini com modelo {Model}", model);
                 var generatedText = await GenerateWithRetriesAsync(config, model, userContext, fileParts, temporalContext, cancellationToken);
-                var payload = ParseAndValidateNotionPayload(generatedText, notionOptions.Value.DatabaseId);
+                var result = ParseAndValidateStructuredEnvelope(generatedText, notionOptions.Value.DatabaseId);
 
-                return new GeminiNotionPayloadResult(model, payload);
+                return result with { ModelUsed = model };
             }
             catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
@@ -187,7 +187,7 @@ Regras adicionais de data:
         return text;
     }
 
-    private static JsonElement ParseAndValidateNotionPayload(string generatedText, string databaseId)
+    private static GeminiStructuredPayloadResult ParseAndValidateStructuredEnvelope(string generatedText, string databaseId)
     {
         using var document = JsonDocument.Parse(generatedText);
         var root = document.RootElement;
@@ -197,14 +197,31 @@ Regras adicionais de data:
             throw new JsonException("Payload gerado deve ser um objeto JSON.");
         }
 
-        if (!root.TryGetProperty("parent", out var parent) ||
+        if (!root.TryGetProperty("structuredEntry", out var structuredEntryElement))
+        {
+            throw new JsonException("Payload gerado nao contem structuredEntry.");
+        }
+
+        var structuredEntry = JsonSerializer.Deserialize<ProfessionalEntryStructuredDto>(
+            structuredEntryElement.GetRawText(),
+            JsonOptions)
+            ?? throw new JsonException("Nao foi possivel desserializar structuredEntry.");
+
+        ValidateStructuredEntry(structuredEntry);
+
+        if (!root.TryGetProperty("notionPayload", out var notionPayload) || notionPayload.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("Payload gerado nao contem notionPayload valido.");
+        }
+
+        if (!notionPayload.TryGetProperty("parent", out var parent) ||
             !parent.TryGetProperty("database_id", out var databaseIdElement) ||
             databaseIdElement.GetString() != databaseId)
         {
             throw new JsonException("Payload gerado nao contem parent.database_id esperado.");
         }
 
-        if (!root.TryGetProperty("properties", out var properties) || properties.ValueKind != JsonValueKind.Object)
+        if (!notionPayload.TryGetProperty("properties", out var properties) || properties.ValueKind != JsonValueKind.Object)
         {
             throw new JsonException("Payload gerado nao contem properties valido.");
         }
@@ -231,7 +248,24 @@ Regras adicionais de data:
             }
         }
 
-        return root.Clone();
+        return new GeminiStructuredPayloadResult(
+            ModelUsed: string.Empty,
+            StructuredEntry: structuredEntry,
+            GeneratedPayload: notionPayload.Clone(),
+            RawEnvelope: root.Clone());
+    }
+
+    private static void ValidateStructuredEntry(ProfessionalEntryStructuredDto structuredEntry)
+    {
+        if (string.IsNullOrWhiteSpace(structuredEntry.Title))
+        {
+            throw new JsonException("structuredEntry.title e obrigatorio.");
+        }
+
+        if (string.IsNullOrWhiteSpace(structuredEntry.Content))
+        {
+            throw new JsonException("structuredEntry.content e obrigatorio.");
+        }
     }
 
     private static bool IsTransient(HttpStatusCode statusCode) =>

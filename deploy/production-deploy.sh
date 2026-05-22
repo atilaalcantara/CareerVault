@@ -10,6 +10,9 @@ ENV_FILE="${ENV_FILE:-.env}"
 DOCKER_CMD="${DOCKER_CMD:-sudo docker}"
 LEGACY_APP_NAMES="${LEGACY_APP_NAMES:-memoria-profissional-api}"
 NETWORK_NAME="${NETWORK_NAME:-career-vault-net}"
+POSTGRES_NETWORK_NAME="${POSTGRES_NETWORK_NAME:-personal-net}"
+PRIMARY_NETWORK_NAME="${PRIMARY_NETWORK_NAME:-personal-net}"
+MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/home/ubuntu/apps/career-vault-api/models-cache}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE"
@@ -18,6 +21,8 @@ fi
 
 $DOCKER_CMD pull "$IMAGE"
 $DOCKER_CMD network create "$NETWORK_NAME" >/dev/null 2>&1 || true
+$DOCKER_CMD network create "$POSTGRES_NETWORK_NAME" >/dev/null 2>&1 || true
+mkdir -p "$MODEL_CACHE_DIR"
 $DOCKER_CMD stop "$APP_NAME" >/dev/null 2>&1 || true
 $DOCKER_CMD rm "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -31,10 +36,14 @@ done
 $DOCKER_CMD run -d \
   --name "$APP_NAME" \
   --restart unless-stopped \
-  --network "$NETWORK_NAME" \
+  --network "$PRIMARY_NETWORK_NAME" \
   --network-alias "$APP_NAME" \
   --env-file "$ENV_FILE" \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e ASPNETCORE_URLS=http://+:$CONTAINER_PORT \
   -p "$HOST_BIND:$HOST_PORT:$CONTAINER_PORT" \
+  -v "$MODEL_CACHE_DIR:/app/.cache/local-embeddings" \
   "$IMAGE"
+
+$DOCKER_CMD network connect "$NETWORK_NAME" "$APP_NAME" >/dev/null 2>&1 || true
+$DOCKER_CMD network connect "$POSTGRES_NETWORK_NAME" "$APP_NAME" >/dev/null 2>&1 || true

@@ -5,12 +5,16 @@ using CareerVault.Api.Services;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Npgsql;
+using Pgvector.Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<GeminiOptions>(builder.Configuration.GetSection(GeminiOptions.SectionName));
 builder.Services.Configure<NotionOptions>(builder.Configuration.GetSection(NotionOptions.SectionName));
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
+builder.Services.Configure<EmbeddingWorkerOptions>(builder.Configuration.GetSection(EmbeddingWorkerOptions.SectionName));
+builder.Services.Configure<LocalEmbeddingsOptions>(builder.Configuration.GetSection(LocalEmbeddingsOptions.SectionName));
 
 var maxRequestBytes = builder.Configuration.GetValue<long?>("Gemini:MaxRequestBytes") ?? 20_000_000;
 builder.WebHost.ConfigureKestrel(options =>
@@ -26,12 +30,30 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.AddHttpClient<GeminiService>();
 builder.Services.AddHttpClient<NotionService>();
 builder.Services.AddHttpClient<TelegramService>();
+builder.Services.AddSingleton(static sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var connectionString = configuration.GetConnectionString("Postgres");
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException(
+            "ConnectionStrings:Postgres nao configurada. Defina a string de conexao para habilitar a persistencia local.");
+    }
+
+    var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+    dataSourceBuilder.UseVector();
+    return dataSourceBuilder.Build();
+});
 builder.Services.AddSingleton<FilePayloadBuilder>();
 builder.Services.AddSingleton<TelegramUpdateQueue>();
 builder.Services.AddSingleton<TelegramMemorySessionStore>();
+builder.Services.AddSingleton<IEmbeddingProvider, LocalEmbeddingProvider>();
+builder.Services.AddSingleton<CareerVaultRepository>();
+builder.Services.AddSingleton<SemanticSearchService>();
 builder.Services.AddScoped<CareerMemoryIngestionService>();
 builder.Services.AddScoped<TelegramUpdateHandler>();
 builder.Services.AddHostedService<TelegramBackgroundWorker>();
+builder.Services.AddHostedService<EmbeddingBackgroundWorker>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -95,11 +117,6 @@ app.MapPost("/api/memory/ingest", async (
         {
             var ingestResponse = await careerMemoryIngestionService.IngestFormFilesAsync(context, files, cancellationToken);
 
-            if (!ingestResponse.Success)
-            {
-                return Results.Json(ingestResponse, statusCode: StatusCodes.Status502BadGateway);
-            }
-
             return Results.Ok(ingestResponse);
         }
         catch (InvalidOperationException ex)
@@ -111,6 +128,11 @@ app.MapPost("/api/memory/ingest", async (
         {
             logger.LogError(ex, "Erro HTTP ao integrar com Gemini ou Notion");
             return Results.Problem(title: "Erro de integracao externa", detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+        }
+        catch (NpgsqlException ex)
+        {
+            logger.LogError(ex, "Erro ao persistir no PostgreSQL");
+            return Results.Problem(title: "Erro ao persistir no PostgreSQL", detail: ex.Message, statusCode: StatusCodes.Status500InternalServerError);
         }
         catch (JsonException ex)
         {
@@ -125,8 +147,31 @@ app.MapPost("/api/memory/ingest", async (
     .ProducesProblem(StatusCodes.Status415UnsupportedMediaType)
     .ProducesProblem(StatusCodes.Status422UnprocessableEntity)
     .ProducesProblem(StatusCodes.Status502BadGateway)
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithName("IngestCareerMemory")
     .DisableAntiforgery();
+
+app.MapPost("/api/v1/search/semantic", async (
+        SemanticSearchRequest request,
+        SemanticSearchService semanticSearchService,
+        ILogger<Program> logger,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var results = await semanticSearchService.SearchAsync(request.Query, request.Limit, cancellationToken);
+            return Results.Ok(results);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Busca semantica invalida.");
+            return Results.Problem(title: "Busca semantica invalida", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    })
+    .Accepts<SemanticSearchRequest>("application/json")
+    .Produces<IReadOnlyList<SemanticSearchResultItem>>(StatusCodes.Status200OK)
+    .ProducesProblem(StatusCodes.Status400BadRequest)
+    .WithName("SearchCareerVaultSemantic");
 
 app.MapPost("/api/telegram/webhook", async (
         HttpRequest request,

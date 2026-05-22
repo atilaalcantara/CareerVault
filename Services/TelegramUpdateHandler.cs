@@ -182,15 +182,22 @@ Tipos aceitos: audio gravado no Telegram, .m4a, .mp3, .wav, .ogg, .oga, .webm; i
         var result = await memoryIngestService.IngestPartsAsync(
             snapshot.Context,
             parts,
+            new IngestionSourceMetadata("telegram", updateId.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             snapshot.ReferenceDate ?? IngestionTemporalContext.Now("telegram_confirm_command_received_at"),
             cancellationToken);
         if (result.Success)
         {
             sessionStore.Remove(chatId);
 
-            var successMessage = string.IsNullOrWhiteSpace(result.NotionUrl)
-                ? "Adicionado ao Notion com sucesso."
-                : $"Adicionado ao Notion com sucesso: {result.NotionUrl}";
+            var successMessage = result.NotionSyncStatus switch
+            {
+                "completed" when !string.IsNullOrWhiteSpace(result.NotionUrl)
+                    => $"Salvo no PostgreSQL e sincronizado com o Notion: {result.NotionUrl}",
+                "completed"
+                    => "Salvo no PostgreSQL e sincronizado com o Notion com sucesso.",
+                _
+                    => $"Salvo no PostgreSQL com sucesso, mas a sincronizacao com o Notion falhou. EntryId: {result.ProfessionalEntryId}. Erro: {Trim(result.NotionError)}"
+            };
 
             await telegramService.SendMessageAsync(chatId, successMessage, cancellationToken);
             return;

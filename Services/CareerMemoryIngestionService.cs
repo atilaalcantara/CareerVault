@@ -7,7 +7,9 @@ namespace CareerVault.Api.Services;
 public sealed class CareerMemoryIngestionService(
     FilePayloadBuilder filePayloadBuilder,
     GeminiService geminiService,
+    CareerVaultRepository repository,
     NotionService notionService,
+    IOptions<LocalEmbeddingsOptions> localEmbeddingsOptions,
     IOptions<GeminiOptions> geminiOptions,
     ILogger<CareerMemoryIngestionService> logger)
 {
@@ -35,6 +37,7 @@ public sealed class CareerMemoryIngestionService(
         return await IngestPartsAsync(
             context,
             fileParts,
+            new IngestionSourceMetadata("http_form"),
             IngestionTemporalContext.Now("http_request_received_at"),
             cancellationToken);
     }
@@ -42,21 +45,79 @@ public sealed class CareerMemoryIngestionService(
     public async Task<IngestionResponse> IngestPartsAsync(
         string? context,
         IReadOnlyCollection<GeminiPart> fileParts,
+        IngestionSourceMetadata source,
         IngestionTemporalContext temporalContext,
         CancellationToken cancellationToken)
     {
         ValidateInput(context, fileParts.Count, EstimateBase64PayloadBytes(fileParts));
 
-        var geminiResult = await geminiService.GenerateNotionPayloadAsync(context, fileParts, temporalContext, cancellationToken);
-        var notionResult = await notionService.CreatePageAsync(geminiResult.GeneratedPayload, cancellationToken);
+        var geminiResult = await geminiService.GenerateStructuredPayloadAsync(context, fileParts, temporalContext, cancellationToken);
+        var embeddingText = EmbeddingTextBuilder.Build(geminiResult.StructuredEntry);
+        var contentHash = EmbeddingTextBuilder.ComputeSha256(embeddingText);
+        var rawPayload = StructuredPayloadRawBuilder.Build(source, context, geminiResult, fileParts.Count);
+
+        var entry = await repository.CreateAsync(
+            new ProfessionalEntryCreateRequest
+            {
+                Source = source,
+                StructuredEntry = geminiResult.StructuredEntry,
+                RawPayload = rawPayload,
+                ContentHash = contentHash,
+                EmbeddingModel = localEmbeddingsOptions.Value.Model,
+                EmbeddingDimensions = localEmbeddingsOptions.Value.Dimensions
+            },
+            cancellationToken);
+
+        logger.LogInformation(
+            "Entrada salva no PostgreSQL com sucesso. EntryId: {EntryId}; embedding status: {EmbeddingStatus}",
+            entry.Id,
+            entry.EmbeddingStatus);
+
+        NotionPageResult notionResult;
+        try
+        {
+            notionResult = await notionService.CreatePageAsync(geminiResult.GeneratedPayload, cancellationToken);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogError(
+                ex,
+                "Erro ao salvar no Notion para a entry {EntryId}. O registro foi mantido no PostgreSQL.",
+                entry.Id);
+
+            notionResult = new NotionPageResult
+            {
+                Success = false,
+                ErrorBody = ex.Message
+            };
+        }
+
+        await repository.UpdateNotionSyncAsync(
+            entry.Id,
+            notionResult.Success,
+            notionResult.PageId,
+            notionResult.ErrorBody,
+            cancellationToken);
+
+        if (!notionResult.Success)
+        {
+            logger.LogError(
+                "Falha ao salvar no Notion para a entry {EntryId}. O registro foi mantido no PostgreSQL. Erro: {Error}",
+                entry.Id,
+                notionResult.ErrorBody);
+        }
 
         return new IngestionResponse
         {
-            Success = notionResult.Success,
+            Success = true,
+            ProfessionalEntryId = entry.Id,
             GeminiModelUsed = geminiResult.ModelUsed,
+            StructuredEntry = geminiResult.StructuredEntry,
             NotionPageId = notionResult.PageId,
             NotionUrl = notionResult.Url,
             GeneratedNotionPayload = geminiResult.GeneratedPayload,
+            EmbeddingStatus = entry.EmbeddingStatus,
+            NotionSyncStatus = notionResult.Success ? "completed" : "failed",
             NotionError = notionResult.ErrorBody
         };
     }

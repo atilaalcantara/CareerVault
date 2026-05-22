@@ -11,4 +11,12 @@ services:
       ASPNETCORE_URLS: http://+:8080
     ports:
       - "5000:8080"
+    volumes:
+      - ./models-cache:/app/.cache/local-embeddings
     restart: unless-stopped
+    networks:
+      - personal-net
+
+networks:
+  personal-net:
+    external: true

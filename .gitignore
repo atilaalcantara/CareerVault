@@ -7,3 +7,5 @@ obj/
 .DS_Store
 ._*
 **/._*
+models-cache/*
+!models-cache/.gitkeep

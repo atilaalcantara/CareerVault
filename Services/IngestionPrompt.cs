@@ -241,7 +241,7 @@ Regras:
 - Nao retorne markdown.
 - Nao retorne explicacoes.
 - Nao use array externo.
-- Retorne exatamente o payload do endpoint POST /v1/pages da Notion API.
+- Retorne um envelope JSON com os campos structuredEntry e notionPayload.
 - Tecnologias e tags devem ser minusculas.
 - Campos longos devem ser resumidos inteligentemente.
 - Evite redundancia entre campos.
@@ -258,16 +258,39 @@ Formato obrigatorio:
 
 Retorne um objeto JSON contendo:
 
-- parent.database_id
-- properties.Título.title
-- properties.Data.date
-- properties.Projeto.rich_text
-- properties.Tipo.select
-- properties.Tecnologias.multi_select
-- properties.Resumo.rich_text
-- properties.Impacto.rich_text
-- properties.Bullets Currículo.rich_text
-- properties.Ideias LinkedIn.rich_text
-- properties.Tags.multi_select
+- structuredEntry.title
+- structuredEntry.content
+- structuredEntry.summary
+- structuredEntry.company
+- structuredEntry.project
+- structuredEntry.role
+- structuredEntry.occurredAt
+- structuredEntry.technologies
+- structuredEntry.tags
+- notionPayload.parent.database_id
+- notionPayload.properties.Título.title
+- notionPayload.properties.Data.date
+- notionPayload.properties.Projeto.rich_text
+- notionPayload.properties.Tipo.select
+- notionPayload.properties.Tecnologias.multi_select
+- notionPayload.properties.Resumo.rich_text
+- notionPayload.properties.Impacto.rich_text
+- notionPayload.properties.Bullets Currículo.rich_text
+- notionPayload.properties.Ideias LinkedIn.rich_text
+- notionPayload.properties.Tags.multi_select
+
+Regras para structuredEntry:
+
+- title e content sao obrigatorios.
+- content deve ser um texto profissional consolidado, mais completo do que o resumo.
+- summary deve ser um resumo denso e curto.
+- company, project e role devem ser null quando nao houver dado confiavel.
+- occurredAt deve usar ISO 8601 com timezone quando houver data confiavel.
+- technologies e tags devem ser arrays de strings em minusculas.
+
+Regras para notionPayload:
+
+- notionPayload deve continuar compativel com o endpoint POST /v1/pages da Notion API.
+- O conteudo de notionPayload deve ser coerente com structuredEntry.
 """;
 }
