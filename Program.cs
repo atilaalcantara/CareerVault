@@ -1,12 +1,13 @@
 using System.Text.Json;
+using CareerVault.Api.Data;
 using CareerVault.Api.Models;
 using CareerVault.Api.Options;
 using CareerVault.Api.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Npgsql;
-using Pgvector.Npgsql;
 using QuestPDF.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -33,7 +34,7 @@ builder.Services.AddHttpClient<GeminiService>();
 builder.Services.AddHttpClient<IAiContentService, GeminiService>();
 builder.Services.AddHttpClient<NotionService>();
 builder.Services.AddHttpClient<TelegramService>();
-builder.Services.AddSingleton(static sp =>
+builder.Services.AddDbContextFactory<CareerVaultDbContext>(static (sp, options) =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var connectionString = configuration.GetConnectionString("Postgres");
@@ -43,9 +44,7 @@ builder.Services.AddSingleton(static sp =>
             "ConnectionStrings:Postgres nao configurada. Defina a string de conexao para habilitar a persistencia local.");
     }
 
-    var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
-    dataSourceBuilder.UseVector();
-    return dataSourceBuilder.Build();
+    options.UseNpgsql(connectionString, npgsqlOptions => npgsqlOptions.UseVector());
 });
 builder.Services.AddSingleton<FilePayloadBuilder>();
 builder.Services.AddSingleton<TelegramUpdateQueue>();
@@ -68,6 +67,15 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 QuestPDF.Settings.License = LicenseType.Community;
+
+var applyMigrationsOnStartup = builder.Configuration.GetValue("Database:ApplyMigrationsOnStartup", false);
+if (applyMigrationsOnStartup)
+{
+    await using var startupScope = app.Services.CreateAsyncScope();
+    var dbContextFactory = startupScope.ServiceProvider.GetRequiredService<IDbContextFactory<CareerVaultDbContext>>();
+    await using var dbContext = await dbContextFactory.CreateDbContextAsync();
+    await dbContext.Database.MigrateAsync();
+}
 
 if (args.Length >= 2 && string.Equals(args[0], "import-notion-csv", StringComparison.OrdinalIgnoreCase))
 {

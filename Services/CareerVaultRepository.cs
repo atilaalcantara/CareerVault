@@ -1,151 +1,74 @@
+using System.Data;
 using System.Text.Json;
+using CareerVault.Api.Data;
+using CareerVault.Api.Data.Entities;
 using CareerVault.Api.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Pgvector;
 
 namespace CareerVault.Api.Services;
 
-public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
+public sealed class CareerVaultRepository(IDbContextFactory<CareerVaultDbContext> dbContextFactory)
 {
     public async Task<ProfessionalEntryRecord> CreateAsync(
         ProfessionalEntryCreateRequest request,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            INSERT INTO career_vault.professional_entries
-            (
-                source_type,
-                source_external_id,
-                title,
-                content,
-                summary,
-                company,
-                project,
-                role,
-                occurred_at,
-                technologies,
-                tags,
-                raw_payload,
-                content_hash,
-                embedding_status,
-                embedding_model,
-                embedding_dimensions,
-                notion_sync_status,
-                notion_page_id,
-                notion_last_error,
-                notion_synced_at
-            )
-            VALUES
-            (
-                @source_type,
-                @source_external_id,
-                @title,
-                @content,
-                @summary,
-                @company,
-                @project,
-                @role,
-                @occurred_at,
-                @technologies,
-                @tags,
-                CAST(@raw_payload AS jsonb),
-                @content_hash,
-                'pending',
-                @embedding_model,
-                @embedding_dimensions,
-                @notion_sync_status,
-                @notion_page_id,
-                @notion_last_error,
-                @notion_synced_at
-            )
-            RETURNING
-                id,
-                source_type,
-                source_external_id,
-                title,
-                content,
-                summary,
-                company,
-                project,
-                role,
-                occurred_at,
-                technologies,
-                tags,
-                raw_payload,
-                content_hash,
-                embedding_status,
-                embedding_model,
-                embedding_dimensions,
-                embedding_updated_at,
-                embedding_error,
-                notion_sync_status,
-                notion_page_id,
-                notion_last_error,
-                notion_synced_at,
-                created_at,
-                updated_at;
-            """;
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        await using var command = dataSource.CreateCommand(sql);
-        AddCommonEntryParameters(command, request);
-        command.Parameters.AddWithValue("raw_payload", request.RawPayload.GetRawText());
-        command.Parameters.AddWithValue("notion_sync_status", request.NotionSyncStatus);
-        command.Parameters.AddWithValue("notion_page_id", (object?)request.NotionPageId ?? DBNull.Value);
-        command.Parameters.AddWithValue("notion_last_error", (object?)request.NotionLastError ?? DBNull.Value);
-        command.Parameters.AddWithValue("notion_synced_at", request.NotionSyncedAt?.UtcDateTime ?? (object)DBNull.Value);
-
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        var entity = new ProfessionalEntry
         {
-            throw new InvalidOperationException("Nao foi possivel inserir a entrada profissional no PostgreSQL.");
-        }
+            SourceType = request.Source.SourceType,
+            SourceExternalId = request.Source.SourceExternalId,
+            Title = request.StructuredEntry.Title,
+            Content = request.StructuredEntry.Content,
+            Summary = request.StructuredEntry.Summary,
+            Company = request.StructuredEntry.Company,
+            Project = request.StructuredEntry.Project,
+            Role = request.StructuredEntry.Role,
+            OccurredAt = request.StructuredEntry.OccurredAt,
+            Technologies = request.StructuredEntry.Technologies,
+            Tags = request.StructuredEntry.Tags,
+            RawPayload = JsonDocument.Parse(request.RawPayload.GetRawText()),
+            ContentHash = request.ContentHash,
+            EmbeddingStatus = "pending",
+            EmbeddingModel = request.EmbeddingModel,
+            EmbeddingDimensions = request.EmbeddingDimensions,
+            NotionSyncStatus = request.NotionSyncStatus,
+            NotionPageId = request.NotionPageId,
+            NotionLastError = request.NotionLastError,
+            NotionSyncedAt = request.NotionSyncedAt
+        };
 
-        return ReadEntry(reader);
+        dbContext.ProfessionalEntries.Add(entity);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return MapEntry(entity);
     }
 
     public async Task<bool> ExistsByContentHashAsync(string contentHash, CancellationToken cancellationToken)
     {
-        const string sql = """
-            SELECT EXISTS (
-                SELECT 1
-                FROM career_vault.professional_entries
-                WHERE content_hash = @content_hash
-            );
-            """;
-
-        await using var command = dataSource.CreateCommand(sql);
-        command.Parameters.AddWithValue("content_hash", contentHash);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is true || result is bool boolResult && boolResult;
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.ProfessionalEntries
+            .AsNoTracking()
+            .AnyAsync(entry => entry.ContentHash == contentHash, cancellationToken);
     }
 
     public async Task<int> MarkEmbeddingsStaleAsync(
         string? model,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            WITH updated AS (
-                UPDATE career_vault.professional_entries
-                SET
-                    embedding_status = 'stale',
-                    embedding_error = NULL
-                WHERE embedding_status = 'completed'
-                  AND (
-                        @model IS NULL
-                        OR embedding_model = @model
-                      )
-                RETURNING 1
-            )
-            SELECT COUNT(*)
-            FROM updated;
-            """;
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        await using var command = dataSource.CreateCommand(sql);
-        command.Parameters.AddWithValue("model", (object?)model ?? DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is int count
-            ? count
-            : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+        return await dbContext.ProfessionalEntries
+            .Where(entry => entry.EmbeddingStatus == "completed"
+                && (model == null || entry.EmbeddingModel == model))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.EmbeddingStatus, "stale")
+                .SetProperty(entry => entry.EmbeddingError, (string?)null)
+                .SetProperty(entry => entry.UpdatedAt, DateTimeOffset.UtcNow),
+                cancellationToken);
     }
 
     public async Task UpdateNotionSyncAsync(
@@ -155,24 +78,17 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         string? error,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            UPDATE career_vault.professional_entries
-            SET
-                notion_sync_status = @notion_sync_status,
-                notion_page_id = @notion_page_id,
-                notion_last_error = @notion_last_error,
-                notion_synced_at = @notion_synced_at
-            WHERE id = @id;
-            """;
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        await using var command = dataSource.CreateCommand(sql);
-        command.Parameters.AddWithValue("id", entryId);
-        command.Parameters.AddWithValue("notion_sync_status", success ? "completed" : "failed");
-        command.Parameters.AddWithValue("notion_page_id", (object?)pageId ?? DBNull.Value);
-        command.Parameters.AddWithValue("notion_last_error", (object?)error ?? DBNull.Value);
-        command.Parameters.AddWithValue("notion_synced_at", success ? DateTimeOffset.UtcNow : DBNull.Value);
-
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await dbContext.ProfessionalEntries
+            .Where(entry => entry.Id == entryId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.NotionSyncStatus, success ? "completed" : "failed")
+                .SetProperty(entry => entry.NotionPageId, pageId)
+                .SetProperty(entry => entry.NotionLastError, error)
+                .SetProperty(entry => entry.NotionSyncedAt, success ? DateTimeOffset.UtcNow : (DateTimeOffset?)null)
+                .SetProperty(entry => entry.UpdatedAt, DateTimeOffset.UtcNow),
+                cancellationToken);
     }
 
     public async Task<IReadOnlyList<ProfessionalEntryEmbeddingJob>> ClaimPendingEmbeddingJobsAsync(
@@ -196,7 +112,8 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
             UPDATE career_vault.professional_entries AS entries
             SET
                 embedding_status = 'processing',
-                embedding_error = NULL
+                embedding_error = NULL,
+                updated_at = now()
             FROM candidates
             WHERE entries.id = candidates.id
             RETURNING
@@ -213,7 +130,12 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
                 entries.embedding_status;
             """;
 
-        await using var command = dataSource.CreateCommand(sql);
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await dbContext.Database.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+
+        var connection = (NpgsqlConnection)dbContext.Database.GetDbConnection();
+        await using var command = new NpgsqlCommand(sql, connection, (NpgsqlTransaction)transaction.GetDbTransaction());
         command.Parameters.AddWithValue("batch_size", batchSize);
         command.Parameters.AddWithValue("failed_retry_delay", failedRetryDelay);
 
@@ -237,6 +159,8 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
             });
         }
 
+        await reader.CloseAsync();
+        await transaction.CommitAsync(cancellationToken);
         return jobs;
     }
 
@@ -248,49 +172,45 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         float[] embedding,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            INSERT INTO career_vault.professional_entry_embeddings
-            (
-                entry_id,
-                model,
-                dimensions,
-                embedding,
-                content_hash
-            )
-            VALUES
-            (
-                @entry_id,
-                @model,
-                @dimensions,
-                @embedding,
-                @content_hash
-            )
-            ON CONFLICT (entry_id, model) DO UPDATE
-            SET
-                dimensions = EXCLUDED.dimensions,
-                embedding = EXCLUDED.embedding,
-                content_hash = EXCLUDED.content_hash,
-                created_at = now();
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
 
-            UPDATE career_vault.professional_entries
-            SET
-                content_hash = @content_hash,
-                embedding_status = 'completed',
-                embedding_model = @model,
-                embedding_dimensions = @dimensions,
-                embedding_updated_at = now(),
-                embedding_error = NULL
-            WHERE id = @entry_id;
-            """;
+        var entry = await dbContext.ProfessionalEntries
+            .SingleOrDefaultAsync(current => current.Id == entryId, cancellationToken)
+            ?? throw new InvalidOperationException($"Entry {entryId} nao encontrada ao salvar embedding.");
 
-        await using var command = dataSource.CreateCommand(sql);
-        command.Parameters.AddWithValue("entry_id", entryId);
-        command.Parameters.AddWithValue("model", model);
-        command.Parameters.AddWithValue("dimensions", dimensions);
-        command.Parameters.AddWithValue("content_hash", contentHash);
-        command.Parameters.AddWithValue("embedding", new Vector(embedding));
+        var existingEmbedding = await dbContext.ProfessionalEntryEmbeddings
+            .SingleOrDefaultAsync(current => current.EntryId == entryId && current.Model == model, cancellationToken);
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        if (existingEmbedding is null)
+        {
+            dbContext.ProfessionalEntryEmbeddings.Add(new ProfessionalEntryEmbedding
+            {
+                Id = Guid.NewGuid(),
+                EntryId = entryId,
+                Model = model,
+                Dimensions = dimensions,
+                Embedding = new Vector(embedding),
+                ContentHash = contentHash
+            });
+        }
+        else
+        {
+            existingEmbedding.Dimensions = dimensions;
+            existingEmbedding.Embedding = new Vector(embedding);
+            existingEmbedding.ContentHash = contentHash;
+            existingEmbedding.CreatedAt = DateTimeOffset.UtcNow;
+        }
+
+        entry.ContentHash = contentHash;
+        entry.EmbeddingStatus = "completed";
+        entry.EmbeddingModel = model;
+        entry.EmbeddingDimensions = dimensions;
+        entry.EmbeddingUpdatedAt = DateTimeOffset.UtcNow;
+        entry.EmbeddingError = null;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task MarkEmbeddingFailedAsync(
@@ -298,18 +218,15 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
         string error,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            UPDATE career_vault.professional_entries
-            SET
-                embedding_status = 'failed',
-                embedding_error = @embedding_error
-            WHERE id = @id;
-            """;
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        await using var command = dataSource.CreateCommand(sql);
-        command.Parameters.AddWithValue("id", entryId);
-        command.Parameters.AddWithValue("embedding_error", error);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await dbContext.ProfessionalEntries
+            .Where(entry => entry.Id == entryId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.EmbeddingStatus, "failed")
+                .SetProperty(entry => entry.EmbeddingError, error)
+                .SetProperty(entry => entry.UpdatedAt, DateTimeOffset.UtcNow),
+                cancellationToken);
     }
 
     public async Task<IReadOnlyList<SemanticSearchResultItem>> SearchSemanticAsync(
@@ -345,7 +262,11 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
             LIMIT @limit;
             """;
 
-        await using var command = dataSource.CreateCommand(sql);
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await dbContext.Database.OpenConnectionAsync(cancellationToken);
+
+        var connection = (NpgsqlConnection)dbContext.Database.GetDbConnection();
+        await using var command = new NpgsqlCommand(sql, connection);
         command.Parameters.AddWithValue("query_embedding", new Vector(queryEmbedding));
         command.Parameters.AddWithValue("limit", limit);
 
@@ -442,7 +363,11 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
             LIMIT @limit;
             """;
 
-        await using var command = dataSource.CreateCommand(sql);
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await dbContext.Database.OpenConnectionAsync(cancellationToken);
+
+        var connection = (NpgsqlConnection)dbContext.Database.GetDbConnection();
+        await using var command = new NpgsqlCommand(sql, connection);
         command.Parameters.AddWithValue("query", query);
         command.Parameters.AddWithValue("query_embedding", new Vector(queryEmbedding));
         command.Parameters.AddWithValue("limit", limit);
@@ -475,61 +400,33 @@ public sealed class CareerVaultRepository(NpgsqlDataSource dataSource)
             Distance = reader.GetDouble(8)
         };
 
-    private static void AddCommonEntryParameters(
-        NpgsqlCommand command,
-        ProfessionalEntryCreateRequest request)
-    {
-        command.Parameters.AddWithValue("source_type", request.Source.SourceType);
-        command.Parameters.AddWithValue("source_external_id", (object?)request.Source.SourceExternalId ?? DBNull.Value);
-        command.Parameters.AddWithValue("title", request.StructuredEntry.Title);
-        command.Parameters.AddWithValue("content", request.StructuredEntry.Content);
-        command.Parameters.AddWithValue("summary", (object?)request.StructuredEntry.Summary ?? DBNull.Value);
-        command.Parameters.AddWithValue("company", (object?)request.StructuredEntry.Company ?? DBNull.Value);
-        command.Parameters.AddWithValue("project", (object?)request.StructuredEntry.Project ?? DBNull.Value);
-        command.Parameters.AddWithValue("role", (object?)request.StructuredEntry.Role ?? DBNull.Value);
-        command.Parameters.AddWithValue(
-            "occurred_at",
-            request.StructuredEntry.OccurredAt is { } occurredAt
-                ? occurredAt.UtcDateTime
-                : DBNull.Value);
-        command.Parameters.AddWithValue("technologies", request.StructuredEntry.Technologies);
-        command.Parameters.AddWithValue("tags", request.StructuredEntry.Tags);
-        command.Parameters.AddWithValue("content_hash", request.ContentHash);
-        command.Parameters.AddWithValue("embedding_model", request.EmbeddingModel);
-        command.Parameters.AddWithValue("embedding_dimensions", request.EmbeddingDimensions);
-    }
-
-    private static ProfessionalEntryRecord ReadEntry(NpgsqlDataReader record)
-    {
-        var rawPayload = JsonDocument.Parse(record.GetString(12)).RootElement.Clone();
-
-        return new ProfessionalEntryRecord
+    private static ProfessionalEntryRecord MapEntry(ProfessionalEntry entity) =>
+        new()
         {
-            Id = record.GetGuid(0),
-            SourceType = record.GetString(1),
-            SourceExternalId = record.IsDBNull(2) ? null : record.GetString(2),
-            Title = record.GetString(3),
-            Content = record.GetString(4),
-            Summary = record.IsDBNull(5) ? null : record.GetString(5),
-            Company = record.IsDBNull(6) ? null : record.GetString(6),
-            Project = record.IsDBNull(7) ? null : record.GetString(7),
-            Role = record.IsDBNull(8) ? null : record.GetString(8),
-            OccurredAt = record.IsDBNull(9) ? null : record.GetFieldValue<DateTimeOffset>(9),
-            Technologies = record.IsDBNull(10) ? [] : record.GetFieldValue<string[]>(10),
-            Tags = record.IsDBNull(11) ? [] : record.GetFieldValue<string[]>(11),
-            RawPayload = rawPayload,
-            ContentHash = record.GetString(13),
-            EmbeddingStatus = record.GetString(14),
-            EmbeddingModel = record.IsDBNull(15) ? null : record.GetString(15),
-            EmbeddingDimensions = record.IsDBNull(16) ? null : record.GetInt32(16),
-            EmbeddingUpdatedAt = record.IsDBNull(17) ? null : record.GetFieldValue<DateTimeOffset>(17),
-            EmbeddingError = record.IsDBNull(18) ? null : record.GetString(18),
-            NotionSyncStatus = record.GetString(19),
-            NotionPageId = record.IsDBNull(20) ? null : record.GetString(20),
-            NotionLastError = record.IsDBNull(21) ? null : record.GetString(21),
-            NotionSyncedAt = record.IsDBNull(22) ? null : record.GetFieldValue<DateTimeOffset>(22),
-            CreatedAt = record.GetFieldValue<DateTimeOffset>(23),
-            UpdatedAt = record.GetFieldValue<DateTimeOffset>(24)
+            Id = entity.Id,
+            SourceType = entity.SourceType,
+            SourceExternalId = entity.SourceExternalId,
+            Title = entity.Title,
+            Content = entity.Content,
+            Summary = entity.Summary,
+            Company = entity.Company,
+            Project = entity.Project,
+            Role = entity.Role,
+            OccurredAt = entity.OccurredAt,
+            Technologies = entity.Technologies,
+            Tags = entity.Tags,
+            RawPayload = entity.RawPayload.RootElement.Clone(),
+            ContentHash = entity.ContentHash,
+            EmbeddingStatus = entity.EmbeddingStatus,
+            EmbeddingModel = entity.EmbeddingModel,
+            EmbeddingDimensions = entity.EmbeddingDimensions,
+            EmbeddingUpdatedAt = entity.EmbeddingUpdatedAt,
+            EmbeddingError = entity.EmbeddingError,
+            NotionSyncStatus = entity.NotionSyncStatus,
+            NotionPageId = entity.NotionPageId,
+            NotionLastError = entity.NotionLastError,
+            NotionSyncedAt = entity.NotionSyncedAt,
+            CreatedAt = entity.CreatedAt,
+            UpdatedAt = entity.UpdatedAt
         };
-    }
 }

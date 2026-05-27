@@ -8,7 +8,7 @@ The ingestion prompt is kept in Portuguese because the generated records are int
 
 - Multipart ingestion for text, audio, images, and PDFs
 - Gemini REST integration with model fallback and retries
-- PostgreSQL persistence with `career_vault` schema
+- Entity Framework Core persistence with PostgreSQL and `career_vault` schema
 - pgvector storage for semantic search
 - Local embeddings with `ElBruno.LocalEmbeddings`
 - Notion REST integration for page creation
@@ -24,6 +24,7 @@ The ingestion prompt is kept in Portuguese because the generated records are int
 - .NET 10
 - ASP.NET Core Minimal APIs
 - C#
+- Entity Framework Core
 - Docker
 - PostgreSQL
 - pgvector
@@ -67,6 +68,7 @@ RESUMEPROFILE__BASESUMMARY=
 ## Run Locally
 
 ```bash
+dotnet tool restore
 dotnet restore
 dotnet run
 ```
@@ -75,6 +77,18 @@ Swagger:
 
 ```text
 http://localhost:5000/swagger
+```
+
+## Database Migrations
+
+The application now uses EF Core migrations and applies pending migrations on startup.
+
+Useful commands:
+
+```bash
+dotnet tool restore
+dotnet dotnet-ef migrations add <MigrationName> --output-dir Data/Migrations
+dotnet dotnet-ef database update
 ```
 
 ## HTTP Ingestion
