@@ -13,11 +13,25 @@ NETWORK_NAME="${NETWORK_NAME:-career-vault-net}"
 POSTGRES_NETWORK_NAME="${POSTGRES_NETWORK_NAME:-personal-net}"
 PRIMARY_NETWORK_NAME="${PRIMARY_NETWORK_NAME:-personal-net}"
 MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/home/ubuntu/apps/career-vault-api/models-cache}"
+INFISICAL_PROJECT_ID="${INFISICAL_PROJECT_ID:-a6d87435-2c71-4077-adc3-cced6e880143}"
+INFISICAL_ENV="${INFISICAL_ENV:-production}"
+INFISICAL_PATH="${INFISICAL_PATH:-/career-vault-api}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE"
   exit 1
 fi
+
+# infisical-export-path handles Infisical authentication (via the
+# centralized /etc/infisical/infisical-credentials.json) and builds the
+# secrets file manually, one "KEY=VALUE" line per secret with no
+# quoting/escaping. This deliberately avoids `infisical export --format
+# dotenv`, whose escaping is not understood by Docker's --env-file parser
+# and silently corrupts values containing certain special characters.
+INFISICAL_ENV_FILE="$(mktemp)"
+cleanup() { rm -f "$INFISICAL_ENV_FILE"; }
+trap cleanup EXIT
+/usr/local/bin/infisical-export-path "$INFISICAL_PATH" "$INFISICAL_ENV_FILE" "$INFISICAL_ENV" "$INFISICAL_PROJECT_ID"
 
 $DOCKER_CMD pull "$IMAGE"
 $DOCKER_CMD network create "$NETWORK_NAME" >/dev/null 2>&1 || true
@@ -39,6 +53,7 @@ $DOCKER_CMD run -d \
   --network "$PRIMARY_NETWORK_NAME" \
   --network-alias "$APP_NAME" \
   --env-file "$ENV_FILE" \
+  --env-file "$INFISICAL_ENV_FILE" \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e ASPNETCORE_URLS=http://+:$CONTAINER_PORT \
   -p "$HOST_BIND:$HOST_PORT:$CONTAINER_PORT" \
